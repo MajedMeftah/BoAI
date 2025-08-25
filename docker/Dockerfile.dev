@@ -1,0 +1,46 @@
+# Dockerfile لبيئة تطوير BoAI
+FROM python:3.11-slim
+
+# تعيين معلومات الصيانة
+LABEL maintainer="BoAI Team <dev@boai.dev>"
+LABEL version="1.0.0"
+LABEL description="بيئة تطوير BoAI - منصة الذكاء الاصطناعي التعليمي"
+
+# تعيين مجلد العمل
+WORKDIR /app
+
+# تثبيت dependencies النظام
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# نسخ متطلبات المشروع أولاً (لتحسين caching)
+COPY requirements.txt .
+
+# تثبيت Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# نسخ كود المشروع
+COPY . .
+
+# إنشاء مجلدات ضرورية
+RUN mkdir -p models logs
+
+# تعيين أذونات للمجلدات
+RUN chmod -R 755 /app
+
+# تعيين متغيرات البيئة للتطوير
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV ENVIRONMENT=development
+ENV DEBUG=True
+
+# فتح منفذ التطبيق
+EXPOSE 8000
+
+# أمر التشغيل الافتراضي
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

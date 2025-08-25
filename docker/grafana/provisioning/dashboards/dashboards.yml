@@ -1,0 +1,87 @@
+# تهيئة Dashboards لـ Grafana
+apiVersion: 1
+
+providers:
+  - name: 'BoAI Dashboards'
+    orgId: 1
+    folder: 'BoAI Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true
+
+# Dashboards المضمنة مسبقاً
+dashboards:
+  - name: 'BoAI Overview'
+    options:
+      path: /etc/grafana/provisioning/dashboards/boai-overview.json
+  - name: 'API Metrics'
+    options:
+      path: /etc/grafana/provisioning/dashboards/api-metrics.json
+  - name: 'Database Performance'
+    options:
+      path: /etc/grafana/provisioning/dashboards/database-performance.json
+
+# مجلدات Dashboards
+folders:
+  - name: 'BoAI Monitoring'
+    orgId: 1
+    uid: 'boai-monitoring'
+  - name: 'Infrastructure'
+    orgId: 1
+    uid: 'infrastructure'
+  - name: 'Application'
+    orgId: 1
+    uid: 'application'
+  - name: 'Database'
+    orgId: 1
+    uid: 'database'
+
+# إعدادات عامة
+config:
+  # تمكين مشاركة Dashboards
+  allowUiUpdates: true
+  # تمكين إنشاء Dashboards جديدة
+  allowCreate: true
+  # تمكين تعديل Dashboards
+  allowEdit: true
+  # تمكين حذف Dashboards
+  allowDelete: false  # منع الحذف في البيئة الإنتاجية
+
+# إعدادات التحديث
+update:
+  # تحديث تلقائي كل 30 ثانية
+  interval: 30s
+  # عدد المحاولات عند الفشل
+  maxRetries: 3
+  # وقت الانتظار بين المحاولات
+  retryInterval: 10s
+
+# إعدادات التخزين المؤقت
+cache:
+  # تمكين التخزين المؤقت
+  enabled: true
+  # مدة التخزين المؤقت (بالثواني)
+  ttl: 300
+  # الحد الأقصى لعدد العناصر المخزنة مؤقتاً
+  maxItems: 1000
+
+# إعدادات الأمان
+security:
+  # تقييد الوصول إلى Dashboards
+  readOnly: false
+  # تمكين المصادقة
+  requireAuth: true
+  # تقييد الوصول بناء على الصلاحيات
+  roleBasedAccess: true
+
+# إعدادات التخصيص
+custom:
+  # تخصيص theme
+  theme: 'dark'
+  # تخصيص timezone
+  timezone: 'UTC'
+  # تخصيص تنسيق التاريخ والوقت
+  dateFormat: 'YYYY-MM-DD HH:mm:ss'
