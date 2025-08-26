@@ -4,7 +4,8 @@
 
 import os
 from typing import List
-from pydantic import BaseSettings, AnyUrl, validator
+from pydantic import AnyUrl, validator
+from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
 # تحميل متغيرات البيئة من ملف .env
@@ -26,6 +27,10 @@ class Settings(BaseSettings):
     # إعدادات قاعدة البيانات
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://boai:boai@localhost:5432/boai")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "3600"))
     
     # إعدادات الأمان
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
@@ -33,17 +38,26 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     
     # إعدادات CORS
-    CORS_ORIGINS: List[str] = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
-    ALLOWED_HOSTS: List[str] = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(",")
+    CORS_ORIGINS: List[str] = []
+    ALLOWED_HOSTS: List[str] = []
     
     # إعدادات ML والنماذج
     MODELS_DIR: str = os.getenv("MODELS_DIR", "models")
     DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "programming_tutor")
     DEFAULT_MODEL_VERSION: str = os.getenv("DEFAULT_MODEL_VERSION", "v1.0")
     
+    # إعدادات الترجمة والخدمات الخارجية
+    GOOGLE_TRANSLATE_API_KEY: str = os.getenv("GOOGLE_TRANSLATE_API_KEY", "")
+    HUGGINGFACE_TOKEN: str = os.getenv("HUGGINGFACE_TOKEN", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    
     # إعدادات التخزين المؤقت
     CACHE_TTL: int = int(os.getenv("CACHE_TTL", "300"))  # 5 دقائق
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+    
+    # إعدادات التطوير
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    RELOAD: bool = os.getenv("RELOAD", "False").lower() == "true"
     
     # التحقق من صحة الإعدادات
     @validator("DATABASE_URL")

@@ -9,10 +9,18 @@ import logging
 from typing import Dict, List, Optional, Tuple
 import re
 from langdetect import detect, DetectorFactory
-from googletrans import Translator
 import spacy
 from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from deep_translator import GoogleTranslator
 import torch
+import httpx
+from functools import lru_cache
+import requests
+from urllib.parse import quote
+import openai
+
+# Import settings
+from src.core.config import settings
 
 # ضمان نتائج ثابتة للكشف عن اللغة
 DetectorFactory.seed = 0
@@ -20,6 +28,9 @@ DetectorFactory.seed = 0
 # إعداد التسجيل
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# تعيين HTTP client للترجمة
+translation_client = httpx.AsyncClient(timeout=30.0)
 
 class NLPPipeline:
     """
@@ -31,7 +42,6 @@ class NLPPipeline:
         تهيئة خط أنابيب المعالجة اللغوية
         """
         self.supported_languages = ['ar', 'en', 'fr', 'es', 'de', 'it', 'ru']
-        self.translator = Translator()
         
         # تحميل نماذج معالجة اللغة الطبيعية
         self._load_models()
@@ -57,6 +67,10 @@ class NLPPipeline:
             
             # نموذج للترجمة (سيتم تحميله عند الحاجة)
             self.translation_models = {}
+            
+            # تهيئة OpenAI إذا كان المفتاح متوفراً
+            if settings.OPENAI_API_KEY:
+                openai.api_key = settings.OPENAI_API_KEY
             
             logger.info("تم تحميل نماذج المعالجة اللغوية بنجاح")
             
@@ -95,10 +109,11 @@ class NLPPipeline:
             logger.error(f"خطأ في كشف اللغة: {e}")
             return 'en'  # افتراض الإنجليزية في حالة الخطأ
     
+    @lru_cache(maxsize=1000)
     def translate_text(self, text: str, target_lang: str = 'en', 
                       source_lang: str = 'auto') -> str:
         """
-        ترجمة النص إلى اللغة المستهدفة
+        ترجمة النص إلى اللغة المستهدفة باستخدام Google Translate API
         
         Args:
             text: النص المترجم
@@ -109,24 +124,155 @@ class NLPPipeline:
             str: النص المترجم
         """
         try:
+            if not text or len(text.strip()) == 0:
+                return text
+            
             if source_lang == 'auto':
                 source_lang = self.detect_language(text)
             
             if source_lang == target_lang:
                 return text  # لا حاجة للترجمة إذا كانت اللغة نفسها
             
-            # استخدام googletrans للترجمة
-            translation = self.translator.translate(
-                text, 
-                src=source_lang, 
-                dest=target_lang
-            )
+            # محاولة استخدام Google Translate API الرسمي إذا كان المفتاح متوفراً
+            if settings.GOOGLE_TRANSLATE_API_KEY:
+                try:
+                    translation = self._translate_with_google_api(text, source_lang, target_lang)
+                    if translation:
+                        return translation
+                except Exception as e:
+                    logger.warning(f"Google Translate API فشل: {e}")
             
-            return translation.text
+            # استخدام deep-translator كبديل
+            try:
+                translator = GoogleTranslator(source=source_lang, target=target_lang)
+                translation = translator.translate(text)
+                if translation:
+                    return translation
+            except Exception as e:
+                logger.warning(f"deep-translator فشل: {e}")
+            
+            # Fallback إلى الترجمة البسيطة إذا فشلت جميع APIs
+            return self._simple_translation_fallback(text, source_lang, target_lang)
             
         except Exception as e:
             logger.error(f"خطأ في الترجمة: {e}")
-            return text  # إرجاع النص الأصلي في حالة الخطأ
+            return self._simple_translation_fallback(text, source_lang, target_lang)
+    
+    def _translate_with_google_api(self, text: str, source_lang: str, target_lang: str) -> str:
+        """
+        استخدام Google Translate API الرسمي للترجمة
+        
+        Args:
+            text: النص المترجم
+            source_lang: اللغة المصدر
+            target_lang: اللغة المستهدفة
+            
+        Returns:
+            str: النص المترجم
+        """
+        try:
+            # بناء URL لـ Google Translate API
+            base_url = "https://translation.googleapis.com/language/translate/v2"
+            params = {
+                'q': text,
+                'source': source_lang,
+                'target': target_lang,
+                'format': 'text',
+                'key': settings.GOOGLE_TRANSLATE_API_KEY
+            }
+            
+            # إرسال الطلب
+            response = requests.post(base_url, data=params, timeout=10)
+            response.raise_for_status()
+            
+            # معالجة الاستجابة
+            data = response.json()
+            if 'data' in data and 'translations' in data['data']:
+                translations = data['data']['translations']
+                if translations and len(translations) > 0:
+                    return translations[0]['translatedText']
+            
+            return None
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"خطأ في اتصال Google Translate API: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"خطأ في معالجة استجابة Google Translate API: {e}")
+            raise
+    
+    def _simple_translation_fallback(self, text: str, source_lang: str, target_lang: str) -> str:
+        """
+        ترجمة بسيطة كبديل عند فشل APIs الخارجية
+        """
+        translations = {
+            'ar': {
+                'hello': 'مرحباً',
+                'help': 'مساعدة',
+                'python': 'بايثون',
+                'programming': 'برمجة',
+                'code': 'كود',
+                'learn': 'تعلم',
+                'teach': 'علم',
+                'explain': 'اشرح',
+                'how': 'كيف',
+                'what': 'ما',
+                'why': 'لماذا',
+                'where': 'أين',
+                'when': 'متى'
+            },
+            'en': {
+                'مرحباً': 'hello',
+                'مساعدة': 'help',
+                'بايثون': 'python',
+                'برمجة': 'programming',
+                'كود': 'code',
+                'تعلم': 'learn',
+                'علم': 'teach',
+                'اشرح': 'explain',
+                'كيف': 'how',
+                'ما': 'what',
+                'لماذا': 'why',
+                'أين': 'where',
+                'متى': 'when'
+            },
+            'fr': {
+                'hello': 'bonjour',
+                'help': 'aide',
+                'python': 'python',
+                'programming': 'programmation'
+            },
+            'es': {
+                'hello': 'hola',
+                'help': 'ayuda',
+                'python': 'python',
+                'programming': 'programación'
+            }
+        }
+        
+        # ترجمة بسيطة للكلمات الشائعة
+        if source_lang in translations and target_lang in translations:
+            translated_words = []
+            for word in text.split():
+                word_lower = word.lower()
+                if word_lower in translations[source_lang]:
+                    translated_word = translations[target_lang].get(
+                        translations[source_lang][word_lower], word
+                    )
+                    translated_words.append(translated_word)
+                else:
+                    translated_words.append(word)
+            return ' '.join(translated_words)
+        
+        return text  # إرجاع النص الأصلي إذا لم تكن الترجمة ممكنة
+    
+    async def translate_text_async(self, text: str, target_lang: str = 'en', 
+                                 source_lang: str = 'auto') -> str:
+        """
+        ترجمة غير متزامنة للنص (للاستخدام في واجهات غير متزامنة)
+        """
+        # يمكن تنفيذ هذا لاحقاً باستخدام async HTTP clients
+        return self.translate_text(text, target_lang, source_lang)
     
     def process_text(self, text: str, language: str = 'auto', 
                     operations: List[str] = None) -> Dict:
@@ -301,7 +447,7 @@ class NLPPipeline:
     def generate_response(self, prompt: str, context: str = None, 
                          language: str = 'auto') -> str:
         """
-        توليد رد بناء على prompt وسياق
+        توليد رد ذكي بناء على prompt وسياق باستخدام نموذج توليد
         
         Args:
             prompt: المطالبة المدخلة
@@ -319,36 +465,243 @@ class NLPPipeline:
             # بناء prompt كامل مع السياق
             full_prompt = prompt
             if context:
-                full_prompt = f"Context: {context}\nQuestion: {prompt}"
+                full_prompt = f"Context: {context}\nQuestion: {prompt}\nAnswer:"
             
-            # محاكاة توليد الرد (سيتم استبدالها بنموذج حقيقي)
-            responses = {
-                'ar': {
-                    'hello': 'مرحباً! كيف يمكنني مساعدتك اليوم؟',
-                    'help': 'أنا هنا لمساعدتك في تعلم البرمجة والمفاهيم التقنية.',
-                    'default': 'شكراً على سؤالك. سأحاول مساعدتك في هذا الموضوع.'
-                },
-                'en': {
-                    'hello': 'Hello! How can I help you today?',
-                    'help': 'I\'m here to help you learn programming and technical concepts.',
-                    'default': 'Thank you for your question. I\'ll try to help you with this topic.'
-                }
-            }
+            # استخدام نموذج توليد متقدم
+            response = self._generate_with_advanced_model(full_prompt, language)
             
-            # البحث عن رد مناسب
-            prompt_lower = prompt.lower()
-            lang_responses = responses.get(language, responses['en'])
+            # تنظيف الرد وإزالة التكرارات
+            cleaned_response = self._clean_generated_response(response, language)
             
-            if 'hello' in prompt_lower or 'مرحب' in prompt_lower:
-                return lang_responses.get('hello', lang_responses['default'])
-            elif 'help' in prompt_lower or 'مساعد' in prompt_lower:
-                return lang_responses.get('help', lang_responses['default'])
-            else:
-                return lang_responses['default']
+            return cleaned_response
                 
         except Exception as e:
             logger.error(f"خطأ في توليد الرد: {e}")
-            return "عذراً، حدث خطأ في المعالجة. يرجى المحاولة مرة أخرى."
+            # Fallback إلى الردود الأساسية في حالة الخطأ
+            return self._fallback_response(prompt, language)
+    
+    def _generate_with_advanced_model(self, prompt: str, language: str) -> str:
+        """
+        توليد الرد باستخدام نماذج متقدمة (OpenAI, T5, GPT-2)
+        
+        Args:
+            prompt: المطالبة المدخلة
+            language: لغة الرد
+            
+        Returns:
+            str: الرد المولد
+        """
+        try:
+            # محاولة استخدام OpenAI API أولاً إذا كان المفتاح متوفراً
+            if settings.OPENAI_API_KEY:
+                try:
+                    return self._generate_with_openai(prompt, language)
+                except Exception as e:
+                    logger.warning(f"OpenAI API فشل: {e}")
+            
+            # استخدام نموذج T5 للأسئلة البرمجية (أفضل من GPT-2 للإجابة على الأسئلة)
+            try:
+                return self._generate_with_t5(prompt, language)
+            except Exception as e:
+                logger.warning(f"نموذج T5 فشل: {e}")
+            
+            # Fallback إلى GPT-2
+            return self._generate_with_gpt2(prompt, language)
+                
+        except Exception as e:
+            logger.error(f"خطأ في توليد النموذج المتقدم: {e}")
+            raise
+    
+    def _generate_with_openai(self, prompt: str, language: str) -> str:
+        """
+        توليد الرد باستخدام OpenAI API
+        
+        Args:
+            prompt: المطالبة المدخلة
+            language: لغة الرد
+            
+        Returns:
+            str: الرد المولد
+        """
+        try:
+            # بناء رسالة النظام لتوجيه النموذج
+            system_message = {
+                "role": "system",
+                "content": "You are BoAI, a helpful programming tutor assistant. Provide clear, concise, and accurate answers to programming questions. Focus on educational value and practical examples."
+            }
+            
+            # بناء رسالة المستخدم
+            user_message = {
+                "role": "user", 
+                "content": prompt
+            }
+            
+            # استدعاء OpenAI API
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[system_message, user_message],
+                max_tokens=300,
+                temperature=0.7,
+                top_p=0.9
+            )
+            
+            if response and 'choices' in response and len(response.choices) > 0:
+                return response.choices[0].message.content.strip()
+            else:
+                raise Exception("استجابة OpenAI فارغة")
+                
+        except Exception as e:
+            logger.error(f"خطأ في توليد النص مع OpenAI: {e}")
+            raise
+    
+    def _generate_with_t5(self, prompt: str, language: str) -> str:
+        """
+        توليد الرد باستخدام نموذج T5 (أفضل للإجابة على الأسئلة)
+        
+        Args:
+            prompt: المطالبة المدخلة
+            language: لغة الرد
+            
+        Returns:
+            str: الرد المولد
+        """
+        try:
+            # تحميل نموذج T5 إذا لم يكن محملاً
+            if not hasattr(self, 't5_model'):
+                self.t5_model = pipeline(
+                    "text2text-generation",
+                    model="t5-small",
+                    device=0 if torch.cuda.is_available() else -1,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
+            
+            # صياغة الـ prompt بشكل مناسب لـ T5
+            t5_prompt = f"question: {prompt} answer:"
+            
+            # توليد الرد
+            generated_text = self.t5_model(
+                t5_prompt,
+                max_length=200,
+                num_return_sequences=1,
+                temperature=0.7,
+                do_sample=True,
+                repetition_penalty=1.1
+            )
+            
+            if generated_text and len(generated_text) > 0:
+                response = generated_text[0]['generated_text'].strip()
+                # إزالة البادئة إذا كانت موجودة
+                if response.startswith("answer:"):
+                    response = response[7:].strip()
+                return response
+            else:
+                return "I'll help you with your programming question."
+                
+        except Exception as e:
+            logger.error(f"خطأ في توليد النص مع T5: {e}")
+            raise
+    
+    def _generate_with_gpt2(self, prompt: str, language: str) -> str:
+        """
+        توليد الرد باستخدام نموذج GPT-2 (النسخة الاحتياطية)
+        
+        Args:
+            prompt: المطالبة المدخلة
+            language: لغة الرد
+            
+        Returns:
+            str: الرد المولد
+        """
+        try:
+            # تحميل نموذج التوليد إذا لم يكن محملاً
+            if not hasattr(self, 'text_generation_model'):
+                self.text_generation_model = pipeline(
+                    "text-generation",
+                    model="gpt2",
+                    device=0 if torch.cuda.is_available() else -1,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
+            
+            # توليد الرد
+            generated_text = self.text_generation_model(
+                prompt,
+                max_length=150,
+                num_return_sequences=1,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=50256  # GPT-2 pad token
+            )
+            
+            if generated_text and len(generated_text) > 0:
+                # استخراج النص المولد فقط (بعد الـ prompt)
+                full_text = generated_text[0]['generated_text']
+                response = full_text[len(prompt):].strip()
+                return response
+            else:
+                return "I'm here to help you learn programming and technical concepts."
+                
+        except Exception as e:
+            logger.error(f"خطأ في توليد النص الإنجليزي: {e}")
+            return "I'll try to help you with your question about programming."
+    
+    def _clean_generated_response(self, response: str, language: str) -> str:
+        """
+        تنظيف الرد المولد وإزالة التكرارات والمشاكل
+        """
+        if not response:
+            return self._fallback_response("", language)
+        
+        # إزالة التكرارات
+        lines = response.split('\n')
+        unique_lines = []
+        seen_lines = set()
+        
+        for line in lines:
+            clean_line = line.strip()
+            if clean_line and clean_line not in seen_lines:
+                unique_lines.append(clean_line)
+                seen_lines.add(clean_line)
+        
+        cleaned_response = ' '.join(unique_lines)
+        
+        # تقصير الرد إذا كان طويلاً جداً
+        if len(cleaned_response.split()) > 100:
+            sentences = cleaned_response.split('.')
+            if len(sentences) > 0:
+                cleaned_response = sentences[0] + '.'
+        
+        return cleaned_response
+    
+    def _fallback_response(self, prompt: str, language: str) -> str:
+        """
+        رد بديل في حالة فشل التوليد
+        """
+        responses = {
+            'ar': {
+                'hello': 'مرحباً! أنا BoAI، مساعدك لتعلم البرمجة. كيف يمكنني مساعدتك اليوم؟',
+                'help': 'أنا هنا لمساعدتك في تعلم البرمجة والمفاهيم التقنية. اسألني أي سؤال عن البرمجة، Python، الخوارزميات، أو أي موضوع تقني.',
+                'programming': 'أنا متخصص في مساعدتك في مواضيع البرمجة. يمكنني شرح المفاهيم، المساعدة في حل المشاكل، وتقديم أمثلة عملية.',
+                'default': 'شكراً على سؤالك. سأحاول مساعدتك في هذا الموضوع البرمجي.'
+            },
+            'en': {
+                'hello': 'Hello! I\'m BoAI, your programming learning assistant. How can I help you today?',
+                'help': 'I\'m here to help you learn programming and technical concepts. Ask me anything about programming, Python, algorithms, or any technical topic.',
+                'programming': 'I specialize in helping with programming topics. I can explain concepts, help solve problems, and provide practical examples.',
+                'default': 'Thank you for your question. I\'ll try to help you with this programming topic.'
+            }
+        }
+        
+        lang_responses = responses.get(language, responses['en'])
+        prompt_lower = prompt.lower()
+        
+        if any(word in prompt_lower for word in ['hello', 'hi', 'مرحب', 'اهلا']):
+            return lang_responses['hello']
+        elif any(word in prompt_lower for word in ['help', 'مساعده', 'مساعدة', 'ساعد']):
+            return lang_responses['help']
+        elif any(word in prompt_lower for word in ['programming', 'code', 'برمجه', 'كود']):
+            return lang_responses['programming']
+        else:
+            return lang_responses['default']
     
     def low_confidence(self, text: str, threshold: float = 0.3) -> bool:
         """

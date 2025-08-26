@@ -1,0 +1,79 @@
+# تهيئة Prometheus لمراقبة BoAI
+global:
+  scrape_interval: 15s  # جمع المقاييس كل 15 ثانية
+  evaluation_interval: 15s  # تقييم القواعد كل 15 ثانية
+  scrape_timeout: 10s  # وقت انتظار الـ scrape
+
+# إعدادات التنبيهات (يمكن تفعيلها لاحقاً)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# قواعد التنبيهات
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# أهداف الـ scrape
+scrape_configs:
+  # مراقبة Prometheus نفسه
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    metrics_path: /metrics
+
+  # مراقبة تطبيق BoAI
+  - job_name: 'boai-app'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['app:8000']
+    scrape_interval: 30s
+    scrape_timeout: 25s
+    # إضافة تسميات إضافية
+    labels:
+      app: 'boai'
+      environment: 'development'
+      component: 'backend'
+
+  # مراقبة قاعدة البيانات PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['db:9187']  # منفذ postgres_exporter الافتراضي
+    scrape_interval: 60s
+    labels:
+      app: 'boai'
+      environment: 'development'
+      component: 'database'
+
+  # مراقبة Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:9121']  # منفذ redis_exporter الافتراضي
+    scrape_interval: 60s
+    labels:
+      app: 'boai'
+      environment: 'development'
+      component: 'cache'
+
+  # مراقبة Node (لاحقاً إذا أردنا مراقبة موارد النظام)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 60s
+    labels:
+      app: 'boai'
+      environment: 'development'
+      component: 'infrastructure'
+
+# إعدادات التخزين
+# storage:
+#   tsdb:
+#     path: /prometheus
+#     retention: 15d  # الاحتفاظ بالبيانات لمدة 15 يوم
+
+# إعدادات الاستعلامات الخارجية (لاحقاً)
+# external_labels:
+#   environment: 'development'
+#   cluster: 'boai-cluster'
